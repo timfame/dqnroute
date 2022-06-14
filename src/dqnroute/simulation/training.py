@@ -9,12 +9,14 @@ from ..messages import *
 from ..agents import *
 from ..utils import *
 from .common import *
+from ..agents.routers import DQNRouter
 
 
 class TrainerRewardAgent(RewardAgent):
     """
     Computes rewards based only on path costs
     """
+
     def _computeReward(self, msg: TrainingRewardMsg, old_reward_data):
         from_node = msg.origin
         return self.pathCost(from_node)
@@ -53,6 +55,7 @@ def TrainingRouterClass(Trainee: DQNRouter, Trainer: Router,
 
     return type(classname, bases, methods)
 
+
 def run_training(RunnerClass, router_type, training_router_type,
                  pkg_num=None, breaks_num=0, max_breaks=2, delta=20, batch_size=64,
                  params_override={}, loss_period=5000, save_net=True, **kwargs):
@@ -69,13 +72,13 @@ def run_training(RunnerClass, router_type, training_router_type,
             prefix = 'pkg'
 
         def _seq_item(num, d):
-            return {prefix+'_number': num, 'delta': d}
+            return {prefix + '_number': num, 'delta': d}
 
         seq = [_seq_item(pkg_num, delta)]
 
         if not is_conveyors:
             # TODO: breaks in conveyors
-            for cur_breaks in range(1, max_breaks+1):
+            for cur_breaks in range(1, max_breaks + 1):
                 for i in range(breaks_num):
                     for j in range(cur_breaks):
                         seq.append[{'action': 'restore_link', 'random': True, 'pause': 0}]
@@ -85,7 +88,7 @@ def run_training(RunnerClass, router_type, training_router_type,
                     seq.append(_seq_item(pkg_num, delta))
 
         params_override = dict_merge(params_override, {
-            'settings': {prefix+'_distr': {
+            'settings': {prefix + '_distr': {
                 'sequence': seq
             }}
         })
@@ -100,13 +103,12 @@ def run_training(RunnerClass, router_type, training_router_type,
     })
 
     launch_data, runner = run_simulation(return_runner=True,
-        RunnerClass=RunnerClass, router_type=router_type, ignore_saved=True,
-        training_router_type=training_router_type,
-        params_override=params_override, **kwargs)
+                                         RunnerClass=RunnerClass, router_type=router_type, ignore_saved=True,
+                                         training_router_type=training_router_type,
+                                         params_override=params_override, **kwargs)
 
     brain = runner.world.factory.brain
     if save_net:
         brain.save()
 
     return brain, loss_series.getSeries(add_avg=True), launch_data
-

@@ -21,7 +21,7 @@ from ..utils import AgentId
 
 import sys
 sys.path.append("../NNet")
-from utils.writeNNet import writeNNet
+from NNet.utils.writeNNet import writeNNet
 
 
 ROUND_DIGITS = 3

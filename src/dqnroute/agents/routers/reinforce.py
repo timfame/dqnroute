@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
-from dqnroute.networks.actor_critic_networks import PPOActor
+from src.dqnroute.networks.actor_critic_networks import PPOActor
 
 
 class PackageHistory:
@@ -42,14 +42,16 @@ class PackageHistory:
         gamma = 0.99
 
         all_routers_needed = dict()
-        # print(PackageHistory.finished_packages)
-        # print(PackageHistory.started_packages)
-        # print(PackageHistory.finished_packages & PackageHistory.started_packages)
+        # print('LEARNING')
+        # print('finished:', PackageHistory.finished_packages)
+        # print('started:', PackageHistory.started_packages)
+        # print('finished & started:', PackageHistory.finished_packages & PackageHistory.started_packages)
         for package_idx in PackageHistory.finished_packages & PackageHistory.started_packages:
             for router in PackageHistory.routers[package_idx].values():
                 all_routers_needed[router.id] = router
 
-        # print(list(all_routers_needed.keys()))
+        # print('all routers keys:', list(all_routers_needed.keys()))
+        # print('all routers values:', list(all_routers_needed.values()))
         for router in all_routers_needed.values():
             router.actor.optimizer.zero_grad()
 
@@ -202,8 +204,8 @@ class Reinforce(LinkStateRouter, RewardAgent):
 
             PackageHistory.addToHistory(msg.pkg, self, reward, action_log_prob)
 
-            if len(PackageHistory.finished_packages) > 128:
-                # PackageHistory.learn()
+            if len(PackageHistory.finished_packages) > 10:
+                PackageHistory.learn()
                 pass
 
             return []
@@ -211,19 +213,26 @@ class Reinforce(LinkStateRouter, RewardAgent):
             return super().handleMsgFrom(sender, msg)
 
     def _act(self, pkg: Package, allowed_nbrs: List[AgentId]):
+        # allowed_nbrs_emb = np.array(list(map(lambda neighbour: self._nodeRepr(neighbour[1]), allowed_nbrs)))
         allowed_nbrs_emb = list(map(lambda neighbour: self._nodeRepr(neighbour[1]), allowed_nbrs))
         allowed_nbrs_emb_tensor = torch.FloatTensor(allowed_nbrs_emb)
         addr_idx = self.id[1]
         dst_idx = pkg.dst[1]
         addr_emb = torch.FloatTensor(self._nodeRepr(addr_idx))
         dst_emb = torch.FloatTensor(self._nodeRepr(dst_idx))
+        # print('addr_emb:', addr_emb)
+        # print('dst_emb:', dst_emb)
 
         # 1. Actor generates next embedding
         predicted_next_emb = self._actorPredict(addr_emb, dst_emb)
+        # print('predicted_next_emb:', predicted_next_emb)
 
         # 2. Compute distances from next embedding (see step 1.) and allowed neighbours
         dist_to_nbrs = self.distance_function(allowed_nbrs_emb_tensor, predicted_next_emb)
-        nbrs_prob = Categorical(F.softmax(1 / (dist_to_nbrs + self.eps), dim=0))
+        # print('dist_to_nbrs:', dist_to_nbrs)
+        softmax_dist = F.softmax(1 / (dist_to_nbrs + self.eps), dim=0)
+        # print('softmax_dist:', softmax_dist)
+        nbrs_prob = Categorical(softmax_dist)
         # TODO debug
 
         # 3. Get sample from allowed neighbours based on probability
@@ -255,7 +264,36 @@ class Reinforce(LinkStateRouter, RewardAgent):
 
 
 class ReinforceNetwork(NetworkRewardAgent, Reinforce):
-    pass
+    def registerResentPkg(self, pkg: Package, **kwargs) -> RewardMsg:
+        addr_idx = kwargs['addr_idx']
+        dst_idx = kwargs['dst_idx']
+        action_idx = kwargs['action_idx']
+        action_log_prob = kwargs['action_log_prob']
+        allowed_neighbours = kwargs['allowed_neighbours']
+
+        reward_data = self._getRewardData(pkg, None)
+
+        self._pending_pkgs[pkg.id] = (addr_idx, dst_idx, action_idx, action_log_prob, allowed_neighbours, reward_data)
+
+        return self._mkReward(pkg, reward_data)
+
+    def _mkReward(self, bag: Bag, reward_data) -> NetworkRewardMsg:
+        # Q_estimate is ignored in our setting
+        time_processed = reward_data
+        return NetworkRewardMsg(self.id, bag, 0, time_processed)
+
+    def receiveReward(self, msg: RewardMsg):
+        addr_idx, dst_idx, action_idx, action_log_prob, allowed_neighbours, old_reward_data = \
+            self._pending_pkgs.pop(msg.pkg.id)
+
+        reward = self._computeReward(msg, old_reward_data)
+        return addr_idx, dst_idx, action_idx, action_log_prob, allowed_neighbours, reward
+
+    def _computeReward(self, msg: ConveyorRewardMsg, old_reward_data):
+        time_sent = old_reward_data
+        time_processed = msg.reward_data
+        time_gap = time_processed - time_sent
+        return -time_gap
 
 
 class ReinforceConveyor(LSConveyorMixin, ConveyorRewardAgent, Reinforce):

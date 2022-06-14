@@ -19,6 +19,7 @@ from .constants import INFTY, DEF_PKG_SIZE
 AgentId = Tuple[str, int]
 InterfaceId = int
 
+
 ##
 # Misc
 #
@@ -31,8 +32,10 @@ def set_random_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+
 def memoize(func):
     mp = {}
+
     def memfoo(x):
         try:
             return mp[x]
@@ -40,10 +43,13 @@ def memoize(func):
             r = func(x)
             mp[x] = r
             return r
+
     return memfoo
+
 
 def empty_gen():
     yield from ()
+
 
 ##
 # Graph construction and config processing
@@ -66,6 +72,7 @@ def make_network_graph(edge_list) -> nx.Graph:
         G.add_edge(('router', u), ('router', v), **params)
     return G
 
+
 def gen_network_graph(gen) -> nx.Graph:
     """
     Generates a random computer network graph given a
@@ -84,15 +91,18 @@ def gen_network_graph(gen) -> nx.Graph:
     else:
         raise Exception('Unsupported graph generator type: {}'.format(gen_type))
 
+
 def agent_type(aid):
     if type(aid) == tuple:
         return aid[0]
     return aid
 
+
 def agent_idx(aid):
     if type(aid) == tuple:
         return aid[1]
     return aid
+
 
 def make_conveyor_topology_graph(config) -> nx.DiGraph:
     """
@@ -140,9 +150,9 @@ def make_conveyor_topology_graph(config) -> nx.DiGraph:
             f"No node at the end of conveyor {conv_id}!"
 
         for i in range(1, len(sections)):
-            u = sections[i-1][:-1]
+            u = sections[i - 1][:-1]
             v = sections[i][:-1]
-            u_pos = sections[i-1][-1]
+            u_pos = sections[i - 1][-1]
             v_pos = sections[i][-1]
             edge_len = v_pos - u_pos
 
@@ -154,6 +164,7 @@ def make_conveyor_topology_graph(config) -> nx.DiGraph:
                 DG.nodes[u]['conveyor_pos'] = u_pos
 
     return DG
+
 
 def make_conveyor_conn_graph(config) -> nx.Graph:
     """
@@ -185,6 +196,7 @@ def make_conveyor_conn_graph(config) -> nx.Graph:
 
     return G
 
+
 def to_conv_graph(topology):
     conv_G = nx.DiGraph()
 
@@ -215,8 +227,10 @@ def conv_to_router(conv_topology):
     router_topology = nx.relabel_nodes(conv_topology, mapping)
     return router_topology, mapping, mapping_inv
 
+
 def interface_idx(conn_graph: nx.Graph, from_agent: AgentId, to_agent: AgentId) -> int:
     return list(conn_graph.edges(from_agent)).index((from_agent, to_agent))
+
 
 def resolve_interface(conn_graph: nx.Graph, from_agent: AgentId, int_id: int) -> Tuple[AgentId, int]:
     """
@@ -233,9 +247,11 @@ def resolve_interface(conn_graph: nx.Graph, from_agent: AgentId, int_id: int) ->
         to_interface = interface_idx(conn_graph, to_agent, from_agent)
     return to_agent, to_interface
 
+
 def only_reachable(G, v, nodes, inv_paths=True):
     filter_func = lambda u: nx.has_path(G, u, v) if inv_paths else nx.has_path(G, v, u)
     return list(filter(filter_func, nodes))
+
 
 ##
 # Conveyor topology graph manipulation
@@ -250,6 +266,7 @@ def conveyor_idx(topology, node):
     else:
         return topology.nodes[node]['conveyor']
 
+
 def node_conv_pos(topology, conv_idx, node):
     es = conveyor_edges(topology, conv_idx)
     p_pos = 0
@@ -261,6 +278,7 @@ def node_conv_pos(topology, conv_idx, node):
             return p_pos
     return None
 
+
 def prev_same_conv_node(topology, node):
     conv_idx = conveyor_idx(topology, node)
     conv_in_edges = [v for v, _, cid in topology.in_edges(node, data='conveyor')
@@ -269,13 +287,15 @@ def prev_same_conv_node(topology, node):
         return conv_in_edges[0]
     return None
 
+
 def next_same_conv_node(topology, node):
     conv_idx = conveyor_idx(topology, node)
     conv_out_edges = [v for _, v, cid in topology.out_edges(node, data='conveyor')
-                     if cid == conv_idx]
+                      if cid == conv_idx]
     if len(conv_out_edges) > 0:
         return conv_out_edges[0]
     return None
+
 
 def prev_adj_conv_node(topology, node):
     conv_idx = conveyor_idx(topology, node)
@@ -285,6 +305,7 @@ def prev_adj_conv_node(topology, node):
         return adj_in_edges[0]
     return None
 
+
 def next_adj_conv_node(topology, node):
     conv_idx = conveyor_idx(topology, node)
     adj_out_edges = [(v, cid) for _, v, cid in topology.out_edges(node, data='conveyor')
@@ -293,18 +314,20 @@ def next_adj_conv_node(topology, node):
         return adj_out_edges[0]
     return None
 
+
 def conveyor_edges(topology, conv_idx):
     edges = [(u, v) for u, v, cid in topology.edges(data='conveyor')
              if cid == conv_idx]
     return sorted(edges, key=lambda e: topology[e[0]][e[1]]['end_pos'])
 
+
 def conveyor_adj_nodes(topology, conv_idx, only_own=False, data=False):
     conv_edges = conveyor_edges(topology, conv_idx)
-    
-    #print(sorted(list(set([cid for u, v, cid in topology.edges(data='conveyor')]))))
-    #print([(u, v) for u, v, cid in topology.edges(data='conveyor')])
-    #print([(u, v) for u, v, cid in topology.edges(data='conveyor') if cid == conv_idx])
-    
+
+    # print(sorted(list(set([cid for u, v, cid in topology.edges(data='conveyor')]))))
+    # print([(u, v) for u, v, cid in topology.edges(data='conveyor')])
+    # print([(u, v) for u, v, cid in topology.edges(data='conveyor') if cid == conv_idx])
+
     nodes = [conv_edges[0][0]]
     for _, v in conv_edges:
         nodes.append(v)
@@ -318,6 +341,7 @@ def conveyor_adj_nodes(topology, conv_idx, only_own=False, data=False):
         nodes = [(n, (topology.nodes[n][data] if type(data) != bool else topology.nodes[n]))
                  for n in nodes]
     return nodes
+
 
 ##
 # Generation of training data and manipulations with it
@@ -336,7 +360,7 @@ def mk_current_neural_state(G, time, pkg, node_addr, *add_data):
         neighbors = G.neighbors(k)
 
     add_data_len = sum(map(len, add_data))
-    dlen = 4 + 2*n + add_data_len + n*n
+    dlen = 4 + 2 * n + add_data_len + n * n
     data = np.zeros(dlen)
     data[0] = d
     data[1] = k
@@ -349,14 +373,14 @@ def mk_current_neural_state(G, time, pkg, node_addr, *add_data):
 
     for vec in add_data:
         vl = len(vec)
-        data[off:off+vl] = vec
+        data[off:off + vl] = vec
         off += vl
 
     for i in range(0, n):
         for j in range(0, n):
             if G.has_edge(i, j):
-                data[off + i*n + j] = 1
-    off += n*n
+                data[off + i * n + j] = 1
+    off += n * n
     for i in range(off, dlen):
         data[i] = -INFTY
     for m in neighbors:
@@ -367,68 +391,83 @@ def mk_current_neural_state(G, time, pkg, node_addr, *add_data):
             data[off + m] = -INFTY
     return data
 
+
 def dict_min(dct):
-    return min(dct.items(), key=lambda x:x[1])
+    return min(dct.items(), key=lambda x: x[1])
+
 
 def mk_num_list(s, n):
-    return list(map(lambda k: s+str(k), range(0, n)))
+    return list(map(lambda k: s + str(k), range(0, n)))
+
 
 meta_cols = ['time', 'pkg_id']
 base_cols = ['dst', 'addr']
 common_cols = base_cols + meta_cols
 
+
 @memoize
 def get_target_cols(n):
     return mk_num_list('predict_', n)
+
 
 @memoize
 def get_dst_cols(n):
     return mk_num_list('dst_', n)
 
+
 @memoize
 def get_addr_cols(n):
     return mk_num_list('addr_', n)
+
 
 @memoize
 def get_neighbors_cols(n):
     return mk_num_list('neighbors_', n)
 
+
 @memoize
 def get_work_status_cols(n):
     return mk_num_list('work_status_', n)
+
 
 @memoize
 def get_feature_cols(n):
     return get_dst_cols(n) + get_addr_cols(n) + get_neighbors_cols(n)
 
+
 @memoize
 def get_amatrix_cols(n):
     res = []
     for m in range(0, n):
-        s = 'amatrix_'+str(m)+'_'
+        s = 'amatrix_' + str(m) + '_'
         res += mk_num_list(s, n)
     return res
+
 
 @memoize
 def get_amatrix_triangle_cols(n):
     res = []
     for i in range(0, n):
-        for j in range(i+1, n):
-            res.append('amatrix_'+str(i)+'_'+str(j))
+        for j in range(i + 1, n):
+            res.append('amatrix_' + str(i) + '_' + str(j))
     return res
+
 
 @memoize
 def get_data_cols(n):
     return common_cols + get_neighbors_cols(n) + get_amatrix_cols(n) + get_target_cols(n)
 
+
 @memoize
 def get_conveyor_data_cols(n):
     return common_cols + get_neighbors_cols(n) + get_work_status_cols(n) + get_amatrix_cols(n) + get_target_cols(n)
+
 
 def make_batches(size, batch_size):
     num_batches = int(np.ceil(size / float(batch_size)))
     for i in range(0, num_batches):
         yield (i * batch_size, min(size, (i + 1) * batch_size))
+
 
 def gen_network_actions(addrs, pkg_distr):
     cur_time = 0
@@ -462,6 +501,7 @@ def gen_network_actions(addrs, pkg_distr):
         else:
             raise Exception('Unexpected action: ' + action)
 
+
 def gen_conveyor_actions(sources, sinks, bags_distr):
     cur_time = 0
     bag_id = 1
@@ -487,6 +527,7 @@ def gen_conveyor_actions(sources, sinks, bags_distr):
         else:
             raise Exception('Unexpected action: ' + action)
 
+
 def unique_everseen(iterable, key=None):
     "List unique elements, preserving order. Remember all elements ever seen."
     # unique_everseen('AAAABBBCCDAABBB') --> A B C D
@@ -504,6 +545,7 @@ def unique_everseen(iterable, key=None):
                 seen_add(k)
                 yield element
 
+
 def transpose_arr(arr):
     sh = arr.shape
     if len(sh) == 1:
@@ -515,14 +557,17 @@ def transpose_arr(arr):
         b = 1
     return arr.reshape((b, a))
 
+
 def reverse_input(inp):
     return list(map(transpose_arr, inp))
+
 
 def stack_batch(batch):
     if type(batch[0]) == dict:
         return stack_batch_dict(batch)
     else:
         return stack_batch_list(batch)
+
 
 def stack_batch_dict(batch):
     ss = {}
@@ -532,14 +577,16 @@ def stack_batch_dict(batch):
             ss[k] = ss[k].flatten()
     return ss
 
+
 def stack_batch_list(batch):
     n = len(batch[0])
-    ss = [None]*n
+    ss = [None] * n
     for i in range(n):
         ss[i] = np.vstack([b[i] for b in batch])
         if ss[i].shape[1] == 1:
             ss[i] = ss[i].flatten()
     return ss
+
 
 #
 # Attribute accessor
@@ -572,11 +619,12 @@ class DynamicEnv(object):
 
         def _getter():
             return self._vars[name]
+
         def _setter(v):
             self._vars[name] = v
 
-        self.register('get_'+name, _getter)
-        self.register('set_'+name, _setter)
+        self.register('get_' + name, _getter)
+        self.register('set_' + name, _setter)
 
     def merge(self, other):
         new = DynamicEnv(**self._attrs, **other._attrs)
@@ -595,32 +643,39 @@ class DynamicEnv(object):
             new.register_var(var, self._vars[var])
         return new
 
+
 class ToDynEnv:
     """
     Classes which can provide their read-only view as `DynamicEnv`
     """
+
     def toDynEnv(self) -> DynamicEnv:
         raise NotImplementedError()
+
 
 class HasTime:
     """
     Classes which have the `time()` method.
     """
+
     def time(self) -> float:
         raise NotImplementedError()
 
+
 class HasLog(HasTime):
     def log(self, msg, force=False):
-        #if force or True:
+        # if force or True:
         if force:
             print('[ {} : {} ] {}'.format(self.logName().ljust(10),
                                           '{}s'.format(self.time()).ljust(8), msg))
+
 
 #
 # Stochastic policy distribution
 #
 
 Distribution = NewType('Distribution', np.ndarray)
+
 
 def delta(i: int, n: int) -> Distribution:
     if i >= n:
@@ -629,8 +684,10 @@ def delta(i: int, n: int) -> Distribution:
     d[i] = 1
     return Distribution(d)
 
+
 def uni(n) -> Distribution:
-    return Distribution(np.full(n, 1.0/n))
+    return Distribution(np.full(n, 1.0 / n))
+
 
 def softmax(x, t=1.0) -> Distribution:
     ax = np.array(x) / t
@@ -641,11 +698,14 @@ def softmax(x, t=1.0) -> Distribution:
         return uni(len(ax))
     return Distribution(e / np.sum(e, axis=0))
 
+
 def sample_distr(distr: Distribution) -> int:
     return np.random.choice(np.arange(len(distr)), p=distr)
 
+
 def soft_argmax(arr, t=1.0) -> int:
     return sample_distr(softmax(arr, t=t))
+
 
 #
 # Simple datatypes serialization and hashing
@@ -672,11 +732,13 @@ def to_bytes(data):
     else:
         raise Exception('Unsupported type to serialize: {}'.format(type(data)))
 
+
 def data_digest(data):
     ba = to_bytes(data)
     m = hashlib.sha256()
     m.update(ba)
     return base64.b16encode(m.digest()).decode('utf-8')
+
 
 ##
 # Algorithmic helpers
@@ -685,6 +747,7 @@ def data_digest(data):
 T = TypeVar('T')
 X = TypeVar('X')
 
+
 def find_by(ls: Iterable[T], pred: Callable[[T], bool],
             return_index: bool = False) -> Union[Tuple[T, int], T, None]:
     try:
@@ -692,6 +755,7 @@ def find_by(ls: Iterable[T], pred: Callable[[T], bool],
         return (v, i) if return_index else v
     except StopIteration:
         return None
+
 
 def binary_search(ls: List[T], diff_func: Callable[[T], X],
                   return_index: bool = False,
@@ -724,7 +788,7 @@ def binary_search(ls: List[T], diff_func: Callable[[T], X],
     if l >= len(ls):
         l -= 1
 
-    if (preference == 'nearest') and (l > 0) and (abs(diff_func(ls[l-1])) < abs(diff_func(ls[l]))):
+    if (preference == 'nearest') and (l > 0) and (abs(diff_func(ls[l - 1])) < abs(diff_func(ls[l]))):
         l -= 1
     elif (preference == 'prev') and (diff_func(ls[l]) < 0):
         if l > 0:
@@ -739,12 +803,15 @@ def binary_search(ls: List[T], diff_func: Callable[[T], X],
 
     return (ls[l], l) if return_index else ls[l]
 
-def differs_from(x: T, using = None) -> Callable[[T], X]:
+
+def differs_from(x: T, using=None) -> Callable[[T], X]:
     def _diff(y):
         if using is not None:
             y = using(y)
         return x - y
+
     return _diff
+
 
 def flatten(ls: List[Any]):
     res = []
@@ -754,6 +821,7 @@ def flatten(ls: List[Any]):
         else:
             res.append(x)
     return res
+
 
 def dict_merge(old_dct, merge_dct, inplace=False):
     """ Recursive dict merge. Inspired by :meth:``dict.update()``, instead of
@@ -777,6 +845,7 @@ def dict_merge(old_dct, merge_dct, inplace=False):
             dct[k] = merge_dct[k]
     return dct
 
+
 def merge_sorted(list_a: List[T], list_b: List[T], using=lambda x: x) -> List[T]:
     if len(list_a) == 0:
         return list_b
@@ -793,6 +862,7 @@ def merge_sorted(list_a: List[T], list_b: List[T], using=lambda x: x) -> List[T]
             res.append(list_b[j])
             j += 1
     return res + list_a[i:] + list_b[j:]
+
 
 def def_list(ls, default=[]):
     if ls is None:

@@ -8,6 +8,7 @@ from .conveyors import *
 
 from typing import Optional
 
+
 class UnsupportedRouterType(Exception):
     """
     Exception which is thrown when an unknown router type
@@ -15,16 +16,21 @@ class UnsupportedRouterType(Exception):
     """
     pass
 
+
 _network_router_classes = {
     'simple_q': SimpleQRouterNetwork,
     'pred_q': PredictiveQRouterNetwork,
     'link_state': LinkStateRouter,
     'glob_dyn': GlobalDynamicRouter,
     'dqn': DQNRouterNetwork,
+    'dqn_centralized': DQNCentralizedRouterNetwork,
     'dqn_oneout': DQNRouterOONetwork,
+    'dqn_oneout_global': DQNGlobalRouterOONetwork,
     'dqn_emb': DQNRouterEmbNetwork,
+    'dqn_emb_global': DQNGlobalRouterEmbNetwork,
     'ppo_emb': PPORouterEmbNetwork,
     'reinforce_emb': ReinforceNetwork,
+    'reinforce_emb_global': GlobalReinforceNetwork
 }
 
 _conveyors_router_classes = {
@@ -35,16 +41,20 @@ _conveyors_router_classes = {
     'dqn': DQNRouterConveyor,
     'dqn_oneout': DQNRouterOOConveyor,
     'centralized_simple': (CentralizedController, CentralizedOracle),
-    'dqn_emb': DQNRouterEmbNetwork,
+    'dqn_emb': DQNRouterEmbConveyor,
+    'dqn_emb_global': DQNCentralizedRouterEmbConveyor,
     'ppo_emb': PPORouterEmbConveyor,
     'reinforce_emb': ReinforceConveyor,
+    'reinforce_emb_global': GlobalReinforceConveyor
 }
 
-def get_router_class(router_type: str, context: Optional[str] = None, oracle=False):
+
+def get_router_class(router_type: str, context: Optional[str] = None, oracle=False, single_router=False):
     try:
+        # print('router class - type:', router_type, 'context:', context, 'oracle:', oracle)
         res = None
         if context is None:
-            raise Exception('Simulation context is not provided: '\
+            raise Exception('Simulation context is not provided: ' \
                             'should be "network" or "conveyors"')
         elif context == 'network':
             res = _network_router_classes[router_type]
@@ -52,7 +62,7 @@ def get_router_class(router_type: str, context: Optional[str] = None, oracle=Fal
             res = _conveyors_router_classes[router_type]
 
         if res is None:
-            raise Exception('Unknown simulation context "{}" '\
+            raise Exception('Unknown simulation context "{}" ' \
                             '(should be "network" or "conveyors")'.format(context))
         if type(res) == tuple:
             return res[1] if oracle else res[0]

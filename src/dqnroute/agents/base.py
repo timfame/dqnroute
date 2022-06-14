@@ -14,6 +14,7 @@ class BrokenInterfaceError(Exception):
     """
     Thrown when a message is sent through non-existing (broken) interface
     """
+
     def __init__(self, nbr: AgentId, msg: Message):
         self.nbr = nbr
         self.msg = msg
@@ -23,6 +24,7 @@ class EventHandler(HasLog):
     """
     An abstract class which handles `WorldEvent`s and produces other `WorldEvent`s.
     """
+
     def __init__(self, id: AgentId, env: DynamicEnv, **kwargs):
         # Simply ignores the parameters; done for convenience.
         super().__init__()
@@ -44,6 +46,7 @@ class MessageHandler(EventHandler):
     Abstract class for the agent which interacts with neighbours via messages.
     Performs mapping between outbound interfaces and neighbours IDs.
     """
+
     def __init__(self, neighbours: List[AgentId], **kwargs):
         super().__init__(**kwargs)
         self.interface_map = {}
@@ -62,8 +65,11 @@ class MessageHandler(EventHandler):
         self._lost_msgs = {}
 
     def _wireMsg(self, event: WorldEvent) -> WorldEvent:
+        # print('_wireMsg, self.id:', self.id, 'event:', event)
         if isinstance(event, Message):
+            # print('_wireMsg. Message')
             if isinstance(event, OutMessage) and event.from_node == self.id:
+                # print('_wireMsg. OutMessage. interface_inv_map', self.interface_inv_map)
                 try:
                     return WireOutMsg(self.interface_inv_map[event.to_node], event.inner_msg)
                 except KeyError:
@@ -71,8 +77,11 @@ class MessageHandler(EventHandler):
             else:
                 return WireOutMsg(-1, event)
         elif isinstance(event, MasterEvent):
-            event.inner = self._wireMsg(event.inner)
-            return event
+            # print('_wireMsg MasterEvent handle inner:', event.inner)
+            new_inner = self._wireMsg(event.inner)
+            new_event = MasterEvent(event.agent, new_inner)
+            # print('_wireMsg MasterEvent, new_event inner:', new_inner, '\n\tnew_event:', new_event)
+            return new_event
         elif isinstance(event, DelayedEvent):
             return DelayedEvent(event.id, event.delay, self._wireMsg(event.inner))
         else:
@@ -88,7 +97,6 @@ class MessageHandler(EventHandler):
 
     def handle(self, event: WorldEvent) -> List[WorldEvent]:
         try:
-            # print(event, isinstance(event, WireInMsg))
             if isinstance(event, WireInMsg):
                 evs = self.handleMsg(self._unwireMsg(event))
             else:
@@ -105,6 +113,7 @@ class MessageHandler(EventHandler):
                     self._lost_msgs[nbr].append(err.msg)
 
             self._events_handled += 1
+            # print('Handle base, res:', res, 'evs:', evs)
             return res
         except:
             if isinstance(event, WireInMsg):
@@ -122,11 +131,12 @@ class MessageHandler(EventHandler):
             return callback()
 
         elif isinstance(msg, InMessage):
-            assert self.id == msg.to_node, \
-                "Wrong recipient of InMessage!"
+            assert self.id == msg.to_node, "Wrong recipient of InMessage!"
+            # print('handleMsg. InMessage. self.id:', self.id, 'msg:', msg)
             return self.handleMsgFrom(msg.from_node, msg.inner_msg)
 
         else:
+            # print('handleMsg. Else. self.id:', self.id, 'msg:', msg)
             return self.handleMsgFrom(self.id, msg)
 
     def init(self, config) -> List[WorldEvent]:
@@ -204,13 +214,19 @@ class MessageHandler(EventHandler):
         return [OutMessage(self.id, v, deepcopy(msg))
                 for v in (set(self.interface_map.values()) - set(exclude))]
 
+    def save(self):
+        pass
+
+
 class Oracle(MessageHandler):
     pass
+
 
 class MasterHandler(MessageHandler):
     """
     A handler which controls all the nodes in the system in a centralized way.
     """
+
     def __init__(self, **kwargs):
         super().__init__(id=('master', 0), neighbours=[], **kwargs)
         self.slaves = {}
@@ -242,8 +258,11 @@ class SlaveHandler(MessageHandler):
     Agent which is controlled in a centralized way via master handler.
     Should not be connected to anything.
     """
-    def __init__(self, id: AgentId, master: MasterHandler):
-        super().__init__(id=id, env=DynamicEnv(time=lambda: 0), neighbours=[])
+
+    def __init__(self, id: AgentId, master: MasterHandler, neighbors=None):
+        if neighbors is None:
+            neighbors = []
+        super().__init__(id=id, env=DynamicEnv(time=lambda: 0), neighbours=neighbors)
         self.master = master
 
     def init(self, config):
@@ -251,27 +270,51 @@ class SlaveHandler(MessageHandler):
         return []
 
     def handleEvent(self, event: WorldEvent) -> List[WorldEvent]:
+        if isinstance(event, InterfaceUpdateEvent):
+            if isinstance(event, InterfaceSetupEvent):
+
+                iid = event.interface
+                nbr = event.neighbour
+                self.interface_map[iid] = nbr
+                self.interface_inv_map[nbr] = iid
+                found_msgs = [OutMessage(self.id, nbr, m) for m in self._lost_msgs.pop(nbr, [])]
+
+                return found_msgs + self.master.addLink(self.id, nbr, event.params)
+
+            elif isinstance(event, InterfaceShutdownEvent):
+
+                iid = event.interface
+                nbr = self.interface_map.pop(iid)
+                del self.interface_inv_map[nbr]
+
+                return self.master.removeLink(self.id, nbr)
+
+            return []
+
         return self.master.handleEvent(SlaveEvent(self.id, event))
+
+    def handleMsgFrom(self, sender: AgentId, msg: Message) -> List[WorldEvent]:
+        return self.master.handleMsgFrom(sender, msg, slave_id=self.id)
+
 
 class Router(MessageHandler):
     """
     Agent which routes packages and service messages.
     """
+
     def handleEvent(self, event: WorldEvent) -> List[WorldEvent]:
         if isinstance(event, PkgEnqueuedEvent):
-            assert event.recipient == self.id, \
-                "Wrong recipient of PkgEnqueuedEvent!"
+            assert event.recipient == self.id, "Wrong recipient of PkgEnqueuedEvent!"
             return self.detectEnqueuedPkg(event.sender, event.pkg)
 
         elif isinstance(event, PkgProcessingEvent):
-            assert event.recipient == self.id, \
-                "Wrong recipient of PkgProcessingEvent!"
+            assert event.recipient == self.id, "Wrong recipient of PkgProcessingEvent!"
 
             pkg = event.pkg
             if pkg.dst == self.id:
                 return [PkgReceiveAction(pkg)]
             else:
-                #self.log('Processing pkg #{} on router {}'.format(pkg.id, self.id[1]))
+                # self.log('Processing pkg #{} on router {}'.format(pkg.id, self.id[1]))
                 sender = event.sender
                 allowed_nbrs = event.allowed_nbrs
                 if allowed_nbrs is None:
@@ -281,8 +324,10 @@ class Router(MessageHandler):
                 assert to_nbr in allowed_nbrs, "Resulting neighbour is not among allowed!"
                 pkg.node_path.append(self.id)
 
+                # print('handle event in Router, to_nbr:', to_nbr, 'pkg:', pkg, 'additional_msgs:', additional_msgs)
+
                 logger.debug('Routing pkg #{} on router {} to router {}'.format(pkg.id, self.id[1], to_nbr[1]))
-                #self.log('Routing pkg #{} on router {} to router {}'.format(pkg.id, self.id[1], to_nbr[1]))
+                # self.log('Routing pkg #{} on router {} to router {}'.format(pkg.id, self.id[1], to_nbr[1]))
                 return [PkgRouteAction(to_nbr, pkg)] + additional_msgs
 
         else:
@@ -305,13 +350,14 @@ class BagDetector(MessageHandler):
     """
     Base class for `Source`s and `Sink`s. Only reacts to `BagDetectionEvent`.
     """
+
     def __init__(self, oracle: bool = False, **kwargs):
         super().__init__(**kwargs)
         self._oracle = oracle
 
     def handleEvent(self, event: WorldEvent) -> List[WorldEvent]:
         if isinstance(event, BagDetectionEvent):
-            #self.log(f"bag detection {event}")
+            # self.log(f"bag detection {event}")
             return self.bagDetection(event.bag)
         elif isinstance(event, (ConveyorBreakEvent, ConveyorRestoreEvent)):
             return []
@@ -327,6 +373,7 @@ class Conveyor(MessageHandler):
     Base class which implements a conveyor controller, which can start
     a conveyor or stop it.
     """
+
     def __init__(self, oracle: bool = False, **kwargs):
         super().__init__(**kwargs)
         self._oracle = oracle
@@ -362,6 +409,7 @@ class Diverter(BagDetector):
     Base class which implements a diverter controller, which detects
     incoming bags and either kicks them out or not.
     """
+
     def bagDetection(self, bag: Bag) -> List[WorldEvent]:
         kick, msgs = self.divert(bag)
         if kick:
@@ -385,10 +433,10 @@ class RewardAgent(object):
     def registerResentPkg(self, pkg: Package, Q_estimate: float, action, data, **kwargs) -> RewardMsg:
         rdata = self._getRewardData(pkg, data)
         self._pending_pkgs[pkg.id] = (action, rdata, data)
-        
+
         # Igor Buzhinsky's hack to suppress a no-key exception in receiveReward
         self._last_tuple = action, rdata, data
-        
+
         return self._mkReward(pkg, Q_estimate, rdata)
 
     def receiveReward(self, msg: RewardMsg):
@@ -396,7 +444,7 @@ class RewardAgent(object):
             action, old_reward_data, saved_data = self._pending_pkgs.pop(msg.pkg.id)
         except KeyError:
             self.log(f'not our package: {msg.pkg}, path:\n  {msg.pkg.node_path}\n', force=True)
-            #raise
+            # raise
             # Igor Buzhinsky's hack to suppress a no-key exception in receiveReward
             action, old_reward_data, saved_data = self._last_tuple
         reward = self._computeReward(msg, old_reward_data)
@@ -410,6 +458,7 @@ class RewardAgent(object):
 
     def _getRewardData(self, pkg: Package, data):
         raise NotImplementedError()
+
 
 class NetworkRewardAgent(RewardAgent):
     """
@@ -426,6 +475,7 @@ class NetworkRewardAgent(RewardAgent):
     def _getRewardData(self, pkg: Package, data):
         return self.env.time()
 
+
 class ConveyorRewardAgent(RewardAgent):
     """
     Agent which receives and processes rewards in conveyor networks
@@ -439,7 +489,7 @@ class ConveyorRewardAgent(RewardAgent):
         time_sent, _ = old_reward_data
         time_processed, energy_gap = msg.reward_data
         time_gap = time_processed - time_sent
-        
+
         # self.log('time gap: {}, nrg gap: {}'.format(time_gap, energy_gap), True)
         return msg.Q_estimate + time_gap + self._e_weight * energy_gap
 

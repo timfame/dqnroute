@@ -1,0 +1,143 @@
+settings:
+  pkg_distr:
+    sequence:
+      - { pkg_number: 2000, delta: 20 }
+      - { action: 'change_topology', size_delta: -2, pause: 20 }
+      - { pkg_number: 2000, delta: 20 }
+      - { action: 'change_topology', size_delta: 1, pause: 20 }
+      - { pkg_number: 2000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 1, pause: 20 }
+#      - { pkg_number: 1000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 2, pause: 20 }
+#      - { pkg_number: 1000, delta: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 1, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: -2, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 1, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 2, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: -4, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 2, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 2, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: -2, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'change_topology', size_delta: 2, pause: 20 }
+#      - { pkg_number: 10000, delta: 20 }
+#      - { action: 'break_link', pause: 20, u: 6, v: 7 }
+#      - { pkg_number: 5000, delta: 20 }
+#      - { action: 'restore_link', pause: 20, u: 6, v: 7 }
+#      - { pkg_number: 5000, delta: 20 }
+#      - { pkg_number: 500, delta: 20, sources: [ 0, 1, 2, 6 ], dests: [ 3, 4, 5, 7 ] }
+#      - { pkg_number: 5000, delta: 20 }
+#      - { pkg_number: 5000, delta: 20, sources: [ 0, 1, 2, 6 ], dests: [ 3, 4, 5, 7 ] }
+#      - { action: 'restore_link', pause: 20, u: 6, v: 7 }
+#      - { pkg_number: 500, delta: 20, sources: [ 0, 1, 2, 6 ], dests: [ 3, 4, 5, 7 ] }
+#      - { pkg_number: 5000, delta: 20 }
+#       - {pkg_number: 1, delta: 10}
+#       - {pkg_number: 2000, delta: 10}
+#      - {pkg_number: 500, delta: 20, sources: [0, 1, 2, 6], dests: [3, 4, 5, 7]}
+#      - {pkg_number: 2000, delta: 10}
+#      - {pkg_number: 2000, delta: 10, sources: [0, 1, 2, 6], dests: [3, 4, 5, 7]}
+#  cut: 20000
+  router_env:
+    pkg_process_delay: 5
+  router:
+    simple_q:
+      learning_rate: 0.5
+    pred_q:
+      learning_rate: 1.0
+      beta: 0.7
+      gamma: 0.9
+    dqn: &dqn
+      # scope: 'fun_test'
+      max_act_time: 250000
+      optimizer: 'rmsprop'
+      activation: 'relu'
+      layers: [64, 64]
+      additional_inputs:
+        - tag: 'amatrix'
+      batch_size: 128
+      mem_capacity: 128
+      softmax_temperature: 1.5 # added by Igor
+      probability_smoothing: 0.01 # added by Igor
+      use_single_neural_network: False
+    dqn_centralized:
+      <<: *dqn
+      additional_inputs: []
+    dqn_oneout:
+      <<: *dqn
+    dqn_emb:
+      <<: *dqn
+      additional_inputs: []
+      initial_size: 13
+      embedding:
+        alg: 'lap'
+        dim: 8
+    dqn_emb_global:
+      <<: *dqn
+#      additional_inputs: []
+      optimizer: 'adam'
+      layers: [64, 128, 'dropout', 128, 64]
+      activation: 'relu'
+      global_network:
+        additional_inputs:
+          - tag: 'amatrix'
+        optimizer: 'adam'
+        layers: [ 64, 128, 'dropout', 128, 64 ]
+        activation: 'relu'
+      embedding:
+        alg: 'lap'
+        dim: 8
+    ppo_emb:
+      distance_function: 'euclid'
+      energy_reward_weight: 0.5
+      additional_inputs:
+        - tag: 'amatrix'
+      actor:
+        optimizer: 'adam'
+        layers: [ 64, 64 ]
+        activation: 'relu'
+      critic:
+        optimizer: 'adam'
+        layers: [ 64, 64 ]
+        activation: 'relu'
+      embedding:
+        alg: 'lap'
+        dim: 8
+    reinforce_emb:
+      distance_function: 'euclid'
+      energy_reward_weight: 0.5
+      additional_inputs:
+        - tag: 'amatrix'
+      actor:
+        optimizer: 'adam'
+        layers: [ 64, 64 ]
+        activation: 'relu'
+      embedding:
+        alg: 'lap'
+        dim: 8
+    reinforce_emb_global:
+      distance_function: 'euclid'
+      energy_reward_weight: 0.5
+      additional_inputs:
+        - tag: 'amatrix'
+      actor:
+        optimizer: 'adam'
+        layers: [ 64, 64 ]
+        activation: 'relu'
+      global_network:
+        optimizer: 'adam'
+        layers: [ 64, 128, 'dropout', 128, 64 ]
+        activation: 'relu'
+      embedding:
+        alg: 'lap'
+        dim: 8
+    embedding:
+      alg: 'lap'
+      dim: 8

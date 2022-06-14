@@ -1,9 +1,12 @@
+import random
+
 import pandas as pd
 from functools import reduce
 
 from typing import Callable, Dict, Optional, List
 
 Aggregator = Callable[[Optional[float], float], float]
+
 
 class EventSeries:
     def __init__(self, period: int, aggregators: Dict[str, Aggregator]):
@@ -23,7 +26,7 @@ class EventSeries:
         except KeyError:
             idx = len(self.records)
             avg_time = cur_period * self.period
-            row = [None]*len(self.columns)
+            row = [None] * len(self.columns)
             row[0] = avg_time
             self.records.append(row)
             self.record_periods.append(cur_period)
@@ -54,7 +57,17 @@ class EventSeries:
             self._log(end_period, coeff * end_gap)
 
     def getSeries(self, add_avg=False, avg_col='avg',
-                  sum_col='sum', count_col='count'):
+                  sum_col='sum', count_col='count', cut=None):
+        if cut is not None:
+            max_period = int(cut // self.period)
+            try:
+                max_idx = self.record_idx[max_period]
+                if max_idx < len(self.records):
+                    self.records = self.records[:max_idx]
+                    self.record_periods = self.record_periods[:max_period]
+            except KeyError:
+                pass
+
         df = pd.DataFrame(self.records, columns=self.columns, index=self.record_periods)
         if add_avg:
             df[avg_col] = df[sum_col] / df[count_col]
@@ -119,7 +132,6 @@ class MultiEventSeries(EventSeries):
         return max([es.maxTime() for es in self.series.values()])
 
 
-
 class ChangingValue(object):
     def __init__(self, data_series, init_val=0, avg=False):
         self.data = data_series
@@ -144,15 +156,19 @@ class ChangingValue(object):
     def total(self, time):
         return self.total_sum + self.cur_val * (time - self.update_time)
 
-def aggregator(f: Callable[[float, float], float], dv = None) -> Aggregator:
+
+def aggregator(f: Callable[[float, float], float], dv=None) -> Aggregator:
     """
     Make an aggregator from a simple function of two values
     """
+
     def _inner(a: Optional[float], b: float) -> float:
         if a is None:
             return dv if dv is not None else b
         return f(a, b)
+
     return _inner
+
 
 def binary_func(name: str) -> Aggregator:
     """
@@ -169,8 +185,10 @@ def binary_func(name: str) -> Aggregator:
     else:
         raise Exception('Unknown aggregator function ' + name)
 
+
 def event_series(period: int, aggr_names: List[str], **kwargs) -> EventSeries:
     return EventSeries(period, {name: binary_func(name) for name in aggr_names}, **kwargs)
+
 
 def split_dataframe(all_records, preserved_cols=[]):
     tagged_cols = [col for col in all_records.columns if col not in preserved_cols]
@@ -183,7 +201,7 @@ def split_dataframe(all_records, preserved_cols=[]):
             tagged[tag] = [col]
 
     def _remove_tag(tag, col):
-        if col.startswith(tag+'_'):
+        if col.startswith(tag + '_'):
             return '_'.join(col.split('_')[1:])
         return col
 

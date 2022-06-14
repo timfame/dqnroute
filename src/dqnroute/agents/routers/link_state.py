@@ -8,11 +8,13 @@ from ..base import *
 from ...messages import *
 from ...constants import INFTY
 
+
 class AbstractStateHandler(MessageHandler):
     """
     A router which implements a link-state protocol but the state is
     not necessarily link-state and can be abstracted out.
     """
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.seq_num = 0
@@ -40,8 +42,8 @@ class AbstractStateHandler(MessageHandler):
         else:
             return super().handleMsgFrom(sender, msg)
 
-    def _announceState(self) -> List[Message]:
-        state = self.getState()
+    def _announceState(self, **kwargs) -> List[Message]:
+        state = self.getState(**kwargs)
         if state is None:
             return []
 
@@ -57,7 +59,7 @@ class AbstractStateHandler(MessageHandler):
         """
         pass
 
-    def getState(self):
+    def getState(self, node: AgentId = None):
         """
         Should be overridden by subclasses. If returned state is `None`,
         no announcement is made.
@@ -67,10 +69,12 @@ class AbstractStateHandler(MessageHandler):
     def processNewAnnouncement(self, node: int, state) -> Tuple[bool, List[WorldEvent]]:
         raise NotImplementedError()
 
+
 class LinkStateRouter(Router, AbstractStateHandler):
     """
     Simple link-state router
     """
+
     def __init__(self, adj_links, edge_weight='weight', **kwargs):
         super().__init__(**kwargs)
         self.network = nx.DiGraph()
@@ -120,7 +124,7 @@ class LinkStateRouter(Router, AbstractStateHandler):
             l2 = nx.dijkstra_path_length(self.network, through, self.id, weight=self.edge_weight)
             return l1 + l2
 
-    def getState(self):
+    def getState(self, node: AgentId = None):
         return self.network.adj[self.id]
 
     def processNewAnnouncement(self, node: AgentId, neighbours) -> Tuple[bool, List[WorldEvent]]:
@@ -192,6 +196,7 @@ class LSConveyorMixin(object):
         works_changed = self._conveyorWorks(node) != state['works']
         self.network.nodes[node]['works'] = state['works']
         return sub_ok or works_changed, msgs
+
 
 class LinkStateRouterConveyor(LSConveyorMixin, LinkStateRouter):
     pass

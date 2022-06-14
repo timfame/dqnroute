@@ -3,6 +3,7 @@ import networkx as nx
 import numpy as np
 import scipy.linalg as lg
 import scipy.sparse as sp
+import node2vec
 
 from typing import Union
 from ..utils import agent_idx
@@ -35,12 +36,19 @@ class HOPEEmbedding(Embedding):
         self.beta = beta
         self._W = None
 
-    def fit(self, graph: Union[nx.DiGraph, np.ndarray], weight='weight'):
+    def fit(self, graph: Union[nx.DiGraph, np.ndarray], weight='weight', real_graph_size=0):
         if type(graph) == nx.DiGraph:
             graph = nx.relabel_nodes(graph, agent_idx)
             A = nx.to_numpy_matrix(graph, nodelist=sorted(graph.nodes), weight=weight)
             n = graph.number_of_nodes()
         else:
+            if real_graph_size > 0:
+                new_graph = np.array([0.0] * (real_graph_size * real_graph_size), dtype=np.float32)
+                for i in range(real_graph_size):
+                    for j in range(real_graph_size):
+                        idx = i * real_graph_size + j
+                        new_graph[idx] = graph[i][j]
+                graph = new_graph.reshape((real_graph_size, real_graph_size))
             A = np.mat(graph)
             n = A.shape[0]
 
@@ -74,6 +82,19 @@ class HOPEEmbedding(Embedding):
         return self._W[idx]
 
 
+class Node2Vec(Embedding):
+    def __init__(self, dim, max_iter=1, walk_len=80, num_walks=10, con_size=10, ret_p=1, inout_p=1, **kwargs):
+        super().__init__(dim, **kwargs)
+        self.emb = None
+
+    def fit(self, graph: Union[nx.DiGraph, np.ndarray], weight='weight', **kwargs):
+        n2v = node2vec.Node2Vec(graph, dimensions=self.dim, weight_key=weight, num_walks=300)
+        self.emb = n2v.fit(window=3, min_count=1, batch_words=2)
+
+    def transform(self, node):
+        return self.emb.wv[node]
+
+
 class LaplacianEigenmap(Embedding):
     def __init__(self, dim, renormalize_weights=True, weight_transform='heat',
                  temp=1.0, **kwargs):
@@ -83,8 +104,16 @@ class LaplacianEigenmap(Embedding):
         self.temp = temp
         self._X = None
 
-    def fit(self, graph: Union[nx.DiGraph, np.ndarray], weight='weight'):
+    def fit(self, graph: Union[nx.DiGraph, np.ndarray], weight='weight', real_graph_size=0):
         if type(graph) == np.ndarray:
+            if real_graph_size > 0:
+                new_graph = np.array([0.0] * (real_graph_size * real_graph_size), dtype=np.float32)
+                for i in range(real_graph_size):
+                    for j in range(real_graph_size):
+                        idx = i * real_graph_size + j
+                        new_graph[idx] = graph[i][j]
+                graph = new_graph.reshape((real_graph_size, real_graph_size))
+
             graph = nx.from_numpy_array(graph, create_using=nx.DiGraph)
             weight = 'weight'
 
@@ -121,7 +150,21 @@ class LaplacianEigenmap(Embedding):
         # minor floating point errors, the problem was worse.
         
         #values, vectors = sp.linalg.eigsh(L, k=self.dim + 1, M=D, which='SM')
-        values, vectors = sp.linalg.eigsh(L, k=self.dim + 1, M=D, which='SM', v0=np.ones(A.shape[0]))
+        # print('L')
+        # print(L)
+        # print('D')
+        # print(D)
+        # print(A.shape)
+        # print(np.ones(A.shape[0]))
+        from scipy.sparse.linalg._eigen.arpack import ArpackError
+        try:
+            values, vectors = sp.linalg.eigsh(L, k=self.dim + 1, M=D, which='SM', v0=np.ones(A.shape[0]))
+        except ArpackError as ae:
+            print(A)
+            print(A.shape, np.ones(A.shape[0]))
+            print(L)
+            print(D)
+            raise ae
      
         # End (Changed by Igor)
         
@@ -138,6 +181,7 @@ class LaplacianEigenmap(Embedding):
 _emb_classes = {
     'hope': HOPEEmbedding,
     'lap': LaplacianEigenmap,
+    'node2vec': Node2Vec
 }
 
 def get_embedding(alg: str, **kwargs):

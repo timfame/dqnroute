@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from ..utils import AgentId
-from ..simulation.conveyors import ConveyorsEnvironment
+from ..simulation.environment.conveyor import ConveyorsEnvironment
 
 from .ml_util import Util
 

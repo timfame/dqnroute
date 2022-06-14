@@ -12,11 +12,13 @@ class AbstractMemory:
 
 
 class Memory(AbstractMemory):
-    samples = []
-    sidx = 0
+    # samples = []
+    # sidx = 0
 
     def __init__(self, capacity):
         self.capacity = capacity
+        self.samples = []
+        self.sidx = 0
 
     def add(self, sample):
         self.samples.append((self.sidx, sample))

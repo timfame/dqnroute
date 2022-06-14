@@ -38,17 +38,19 @@ class PPOActor(SaveableModel):
         if self.uses_embedding:
             addr_ = atleast_dim(addr, 2)
             dst_ = atleast_dim(dst, 2)
-
+            # print('uses_embedding, addr_:', addr_, "dst_:", dst_)
             if self.embedding_shift:
                 delta_ = dst_ - addr_
                 input_tensors = torch.FloatTensor(delta_)
             else:
                 input_tensors = [addr_, dst_]
                 input_tensors = torch.cat(input_tensors, dim=1)
+            # print('input_tensors:', input_tensors)
         else:
             raise NotImplementedError()
 
         outputs = self.actor(input_tensors)
+        # outputs = torch.nan_to_num(outputs)
 
         if self.uses_embedding and self.embedding_shift:
             outputs += addr_

@@ -20,16 +20,17 @@ from ...networks import *
 
 logger = logging.getLogger(DQNROUTE_LOGGER)
 
+
 class SharedBrainStorage:
     INSTANCE = None
     PROCESSED_NODES = 0
-    
+
     @staticmethod
     def load(brain_loader: Callable[[], QNetwork], no_nodes: int) -> QNetwork:
         if SharedBrainStorage.INSTANCE is None:
             SharedBrainStorage.INSTANCE = brain_loader()
         SharedBrainStorage.PROCESSED_NODES += 1
-        #print(f"Brain initialization: {SharedBrainStorage.PROCESSED_NODES} / {no_nodes} agents")
+        # print(f"Brain initialization: {SharedBrainStorage.PROCESSED_NODES} / {no_nodes} agents")
         result = SharedBrainStorage.INSTANCE
         if SharedBrainStorage.PROCESSED_NODES == no_nodes:
             # all nodes have been processes
@@ -37,12 +38,13 @@ class SharedBrainStorage:
             SharedBrainStorage.INSTANCE = None
             SharedBrainStorage.PROCESSED_NODES = 0
         return result
-        
+
 
 class DQNRouter(LinkStateRouter, RewardAgent):
     """
     A router which implements the DQN-routing algorithm.
     """
+
     def __init__(self, batch_size: int, mem_capacity: int, nodes: List[AgentId],
                  optimizer='rmsprop', brain=None, random_init=False, max_act_time=None,
                  additional_inputs=[], softmax_temperature: float = 1.5,
@@ -66,7 +68,7 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         self.additional_inputs = additional_inputs
         self.nodes = nodes
         self.max_act_time = max_act_time
-        
+
         # changed by Igor: custom temperatures for softmax:
         self.min_temp = softmax_temperature
         # added by Igor: probability smoothing (0 means no smoothing):
@@ -84,9 +86,14 @@ class DQNRouter(LinkStateRouter, RewardAgent):
                     b.init_xavier()
                 else:
                     if load_filename is not None:
-                        b.change_label(load_filename)
-                    b.restore()
+                        print('loadfilename:', load_filename)
+                        rindex = load_filename.rindex('.')
+                        current_filename = load_filename[:rindex] + f'_real_graph_size_{b.graph_size}' + \
+                                           load_filename[rindex:]
+                        b.change_label(current_filename)
+                        b.restore()
             return b
+
         if use_single_neural_network:
             self.brain = SharedBrainStorage.load(load_brain, len(nodes))
         else:
@@ -96,27 +103,39 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         self.optimizer = get_optimizer(optimizer)(self.brain.parameters())
         self.loss_func = nn.MSELoss()
 
+    def save(self):
+        self.brain.save()
+
     def route(self, sender: AgentId, pkg: Package, allowed_nbrs: List[AgentId]) -> Tuple[AgentId, List[Message]]:
         if self.max_act_time is not None and self.env.time() > self.max_act_time:
             return super().route(sender, pkg, allowed_nbrs)
         else:
             to, estimate, saved_state = self._act(pkg, allowed_nbrs)
             reward = self.registerResentPkg(pkg, estimate, to, saved_state)
+            # print('Route. src:', self.id, 'dst:', pkg.dst, 'predict:', to, 'state:', saved_state, 'estimate:',
+            #       estimate)
+            # print('Route. self.id:', self.id, 'sender:', sender, 'neighbors:', allowed_nbrs, 'to:', to, 'estimate:', estimate, 'pkg:', pkg, 'reward:', reward)
             return to, [OutMessage(self.id, sender, reward)] if sender[0] != 'world' else []
 
     def handleMsgFrom(self, sender: AgentId, msg: Message) -> List[Message]:
         if isinstance(msg, RewardMsg):
             action, Q_new, prev_state = self.receiveReward(msg)
+            # print('RewardMsg, sender:', sender, 'action:', action, 'Q_new:', Q_new)
+            # print('RewardMsg, src:', self.id, 'dst:', msg.pkg.dst, 'predict:', action, 'state:', prev_state, 'sender:',
+            #       sender, 'Q_new:', Q_new)
             self.memory.add((prev_state, action[1], -Q_new))
-
-            if self.use_reinforce:
+            if self.use_reinforce and len(self.memory.samples) >= self.memory.capacity:
                 self._replay()
+            # else:
+            #     print('cap:', self.memory.capacity, len(self.memory.samples))
             return []
         else:
             return super().handleMsgFrom(sender, msg)
 
-    def _makeBrain(self, additional_inputs=[], **kwargs):
-        return QNetwork(len(self.nodes), additional_inputs=additional_inputs, one_out=False, **kwargs)
+    def _makeBrain(self, additional_inputs=[], initial_size=None, **kwargs):
+        if initial_size is None:
+            initial_size = len(self.nodes)
+        return QNetwork(initial_size, additional_inputs=additional_inputs, one_out=False, **kwargs)
 
     def _act(self, pkg: Package, allowed_nbrs: List[AgentId]):
         state = self._getNNState(pkg, allowed_nbrs)
@@ -143,29 +162,42 @@ class DQNRouter(LinkStateRouter, RewardAgent):
         self.optimizer.step()
         return float(loss)
 
-    def _getAddInput(self, tag, *args, **kwargs):
+    def _getAddInput(self, tag, graph_size_delta=0, *args, **kwargs):
         if tag == 'amatrix':
+            # print('getAddInput', self.network, self.nodes)
             amatrix = nx.convert_matrix.to_numpy_array(
                 self.network, nodelist=self.nodes, weight=self.edge_weight,
                 dtype=np.float32)
             gstate = np.ravel(amatrix)
-            return gstate
+            if graph_size_delta == 0:
+                return gstate
+
+            cur_sz = len(self.network.nodes)
+            new_sz = cur_sz + graph_size_delta
+            new_gstate = np.array([0.0] * (new_sz * new_sz), dtype=np.float32)
+            for i in range(cur_sz):
+                for j in range(cur_sz):
+                    idx = i * cur_sz + j
+                    new_idx = i * new_sz + j
+                    new_gstate[new_idx] = gstate[idx]
+            return new_gstate
         else:
             raise Exception('Unknown additional input: ' + tag)
 
-    def _getNNState(self, pkg: Package, nbrs: List[AgentId]):
+    def _getNNState(self, pkg: Package, nbrs: List[AgentId], graph_size_delta=0):
         n = len(self.nodes)
         addr = np.array(self.id[1])
         dst = np.array(pkg.dst[1])
 
-        neighbours = np.array(
-            list(map(lambda v: v in nbrs, self.nodes)),
-            dtype=np.float32)
+        neighbors = list(map(lambda v: v in nbrs, self.nodes))
+        for _ in range(graph_size_delta):
+            neighbors.append(False)
+        neighbours = np.array(neighbors, dtype=np.float32)
         input = [addr, dst, neighbours]
 
         for inp in self.additional_inputs:
             tag = inp['tag']
-            add_inp = self._getAddInput(tag)
+            add_inp = self._getAddInput(tag, graph_size_delta=graph_size_delta)
             if tag == 'amatrix':
                 add_inp[add_inp > 0] = 1
             input.append(add_inp)
@@ -204,45 +236,67 @@ class DQNRouterOO(DQNRouter):
     """
     Variant of DQN router which uses Q-network with scalar output.
     """
-    def _makeBrain(self, additional_inputs=[], **kwargs):
-        return QNetwork(len(self.nodes), additional_inputs=additional_inputs,
+
+    def _makeBrain(self, additional_inputs=[], initial_size=None, **kwargs):
+        if initial_size is None:
+            initial_size = len(self.nodes)
+        return QNetwork(initial_size, additional_inputs=additional_inputs,
                         one_out=True, **kwargs)
 
     def _act(self, pkg: Package, allowed_nbrs: List[AgentId]):
         state = self._getNNState(pkg, allowed_nbrs)
+        # print('ACT, state:', state)
         prediction = self._predict(state).flatten()
+        # print('ACT, prediction:', prediction)
         distr = softmax(prediction, self.min_temp)
-        
+        # print('ACT, distr after softmax:', distr)
+
         # Igor: probability smoothing
         distr = (1 - self.probability_smoothing) * distr + self.probability_smoothing / len(distr)
-        
+        # print('ACT, distr after smooth:', distr)
+
         to_idx = sample_distr(distr)
         estimate = -np.dot(prediction, distr)
 
         saved_state = [s[to_idx] for s in state]
+        # print('ACT, to_idx:', to_idx, 'saved_state:', saved_state)
         to = allowed_nbrs[to_idx]
+
         return to, estimate, saved_state
 
     def _nodeRepr(self, node):
         return np.array(node)
 
-    def _getAddInput(self, tag, nbr):
-        return super()._getAddInput(tag)
+    def _getAddInput(self, tag, nbr, graph_size_delta=0):
+        return super()._getAddInput(tag, graph_size_delta=graph_size_delta)
 
-    def _getNNState(self, pkg: Package, nbrs: List[AgentId]):
+    def _getNNState(self, pkg: Package, nbrs: List[AgentId], graph_size_delta=0):
         n = len(self.nodes)
         addr = self._nodeRepr(self.id[1])
         dst = self._nodeRepr(pkg.dst[1])
 
-        get_add_inputs = lambda nbr: [self._getAddInput(inp['tag'], nbr)
+        get_add_inputs = lambda nbr: [self._getAddInput(inp['tag'], nbr, graph_size_delta=graph_size_delta)
                                       for inp in self.additional_inputs]
 
         input = [[addr, dst, self._nodeRepr(v[1])] + get_add_inputs(v) for v in nbrs]
+        # print('NN State:', input)
+        # print('Stacked NN State:', stack_batch(input))
+        #
+        # def unsqueeze(arr, min_d=2):
+        #     if len(arr.shape) == 0:
+        #         arr = np.array([arr])
+        #     if len(arr.shape) < min_d:
+        #         return arr.reshape(arr.shape[0], -1)
+        #     return arr
+        # print('concatenate:', np.concatenate([unsqueeze(y) for y in stack_batch(input)], axis=1))
         return stack_batch(input)
 
     def _replay(self):
         states, _, values = self._sampleMemStacked()
-        self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=0))
+        # print(np.array(states, dtype=np.float32).shape, np.array(values, dtype=np.float32).shape)
+        replay_loss = self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=1))
+        # replay_loss = self._train(states, np.expand_dims(np.array(values, dtype=np.float32), axis=0))
+        # print('DQN loss:', replay_loss)
 
 
 class DQNRouterEmb(DQNRouterOO):
@@ -250,6 +304,7 @@ class DQNRouterEmb(DQNRouterOO):
     Variant of DQNRouter which uses graph embeddings instead of
     one-hot label encodings.
     """
+
     def __init__(self, embedding: Union[dict, Embedding], edges_num: int, **kwargs):
         # Those are used to only re-learn the embedding when the topology is changed
         self.prev_num_nodes = 0
@@ -264,15 +319,17 @@ class DQNRouterEmb(DQNRouterOO):
 
         super().__init__(**kwargs)
 
-    def _makeBrain(self, additional_inputs=[], **kwargs):
+    def _makeBrain(self, additional_inputs=[], initial_size=None, **kwargs):
+        if initial_size is None:
+            initial_size = len(self.nodes)
         if not self.use_combined_model:
             return QNetwork(
-                len(self.nodes), additional_inputs=additional_inputs,
+                initial_size, additional_inputs=additional_inputs,
                 embedding_dim=self.embedding.dim, one_out=True, **kwargs
             )
         else:
             return CombinedNetwork(
-                len(self.nodes), additional_inputs=additional_inputs,
+                initial_size, additional_inputs=additional_inputs,
                 embedding_dim=self.embedding.dim, one_out=True, **kwargs
             )
 
@@ -296,8 +353,10 @@ class DQNRouterEmb(DQNRouterOO):
 class DQNRouterNetwork(NetworkRewardAgent, DQNRouter):
     pass
 
+
 class DQNRouterOONetwork(NetworkRewardAgent, DQNRouterOO):
     pass
+
 
 class DQNRouterEmbNetwork(NetworkRewardAgent, DQNRouterEmb):
     pass
@@ -307,6 +366,7 @@ class ConveyorAddInputMixin:
     """
     Mixin which adds conveyor-specific additional NN inputs support
     """
+
     def _getAddInput(self, tag, nbr=None):
         if tag == 'work_status':
             return np.array(
@@ -322,9 +382,10 @@ class ConveyorAddInputMixin:
 class DQNRouterConveyor(LSConveyorMixin, ConveyorRewardAgent, ConveyorAddInputMixin, DQNRouter):
     pass
 
+
 class DQNRouterOOConveyor(LSConveyorMixin, ConveyorRewardAgent, ConveyorAddInputMixin, DQNRouterOO):
     pass
 
+
 class DQNRouterEmbConveyor(LSConveyorMixin, ConveyorRewardAgent, ConveyorAddInputMixin, DQNRouterEmb):
     pass
-

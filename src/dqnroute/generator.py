@@ -13,12 +13,14 @@ import os
 from .utils import *
 from .constants import *
 from .agents import *
-from .simulation import *
+from .simulation.factory.router import RouterFactory
+from .simulation.runner.conveyor import ConveyorsRunner
+from .simulation.runner.network import NetworkRunner
 
 
-def add_input_cols(tag, dim):
+def add_input_cols(tag, dim, graph_size_delta=0):
     if tag == 'amatrix':
-        return get_amatrix_cols(dim)
+        return get_amatrix_cols(dim+graph_size_delta)
     else:
         return mk_num_list(tag + '_', dim)
 
@@ -38,8 +40,14 @@ def _cols(tag, n):
 
 
 def update_network(router, G):
+    if router is None:
+        return
     router.network = G
     router.networkStateChanged()
+
+
+def get_random_router_node(g):
+    return list(g.nodes)[random.randint(0, len(g.nodes) - 1)]
 
 
 def _gen_episodes(
@@ -50,17 +58,14 @@ def _gen_episodes(
         bar=None,
         sinks=None,
         random_seed=None,
-        use_full_topology=True
+        use_full_topology=True,
+        graph_size_delta=0,
 ) -> pd.DataFrame:
-    print(f'Use full topolology: {use_full_topology}')
+    # print(f'\nUse full topolology: {use_full_topology}')
 
     G = factory.topology_graph
     nodes = sorted(G.nodes)
     n = len(nodes)
-
-    amatrix = nx.convert_matrix.to_numpy_array(
-        G, nodelist=nodes, weight=factory.edge_weight, dtype=np.float32)
-    gstate = np.ravel(amatrix)
 
     # edges_indexes = []
     # for from_idx, from_node in enumerate(nodes):
@@ -88,37 +93,47 @@ def _gen_episodes(
 
     additional_inputs = None
     routers = {}
+    master_router = factory.makeMasterHandler() if factory.centralized() else None
     node_dim = 1 if one_out else n
 
     for rid in nodes:
         router = factory._makeHandler(rid)
-        update_network(router, G)
+        if master_router is None:
+            update_network(router, G)
         routers[rid] = router
-        if additional_inputs is None:
+        if additional_inputs is None and master_router is None:
             additional_inputs = router.additional_inputs
+    update_network(master_router, G)
+    additional_inputs = master_router.additional_inputs if master_router is not None else additional_inputs
 
     cols = ['addr', 'dst']
 
-    if 'ppo' in router_type:
+    ppo_or_global = 'ppo' in router_type or 'global' in router_type
+    amatrix_need = False
+
+    if ppo_or_global:
         for inp in additional_inputs:
+            if inp['tag'] == 'amatrix':
+                amatrix_need = True
             cols += add_input_cols(inp['tag'], inp.get('dim', n))
         cols += ['next_addr', 'addr_v_func']
+        if 'global' in router_type:
+            cols += ['nb1', 'nb2', 'nb3']
     else:
         if node_dim == 1:
             cols.append('neighbour')
         else:
-            cols += get_neighbors_cols(node_dim)
+            cols += get_neighbors_cols(node_dim + graph_size_delta)
 
         for inp in additional_inputs:
-            cols += add_input_cols(inp['tag'], inp.get('dim', n))
+            cols += add_input_cols(inp['tag'], inp.get('dim', n), graph_size_delta=graph_size_delta)
 
         if node_dim == 1:
             cols.append('predict')
         else:
-            cols += get_target_cols(n)
+            cols += get_target_cols(n + graph_size_delta)
 
     df = pd.DataFrame(columns=cols)
-
 
     pkg_id = 1
     episode = 0
@@ -150,18 +165,33 @@ def _gen_episodes(
 
         episode += 1
 
+        def getNNState(pkg, nbrs):
+            return router._getNNState(pkg, nbrs, graph_size_delta=graph_size_delta) if master_router is None else master_router._getNNState(router.id, pkg, nbrs)
+
         # ppo addition
-        if 'ppo' in router_type:
+        if ppo_or_global:
             path = nx.dijkstra_path(G, cur, dst, weight=factory.edge_weight)
             # print(path, cur, dst)
             next_addr = path[1]
             full_path_length = -nx.path_weight(G, path, weight=factory.edge_weight)
 
-            row = [cur[1], dst[1]] + gstate.tolist() + [next_addr[1], full_path_length]
+            row = [cur[1], dst[1]]
+
+            if amatrix_need:
+                row = row + gstate.tolist()
+
+            row = row + [next_addr[1], full_path_length]
+
+            if 'global' in router_type:
+                rowNbrs = [nbrs[0][1]]
+                rowNbrs += [nbrs[1][1]] if len(nbrs) > 1 else [-1]
+                rowNbrs += [nbrs[2][1]] if len(nbrs) > 2 else [-1]
+                row = row + rowNbrs
+
             df.loc[len(df)] = row
         else:
             pkg = Package(pkg_id, DEF_PKG_SIZE, dst, 0, None)
-            state = list(router._getNNState(pkg, nbrs))
+            state = list(getNNState(pkg, nbrs))
 
             def plen_func(v):
                 plen = nx.dijkstra_path_length(G, v, dst, weight=factory.edge_weight)
@@ -176,7 +206,7 @@ def _gen_episodes(
                     df.loc[len(df)] = row
             else:
                 predict = np.fromiter(map(lambda i: plen_func(('router', i)) if ('router', i) in nbrs else -INFTY,
-                                          range(n)),
+                                          range(n + graph_size_delta)),
                                       dtype=np.float32)
                 state.append(predict)
                 state_ = [unsqueeze(y, 1) for y in state]
@@ -202,7 +232,11 @@ def gen_episodes(
         save_path=None,
         ignore_saved=False,
         run_params={},
-        use_full_topology=True
+        use_full_topology=True,
+        delete_delta=0,
+        add_delta=0,
+        graph_size_delta=0,
+        is_dqn=False,
 ) -> pd.DataFrame:
     if save_path is not None:
         if not ignore_saved and os.path.isfile(save_path):
@@ -218,6 +252,59 @@ def gen_episodes(
         'settings': {'router': {router_type: {'random_init': True}}}
     }
 
+    original_run_params = run_params['network']
+    if delete_delta > 0 or add_delta > 0:
+        G = make_network_graph(run_params['network'])
+        graph_size_delta = graph_size_delta + delete_delta - add_delta
+        for _ in range(delete_delta):
+            new_g = G.copy()
+            node_to_delete = get_random_router_node(new_g)
+            # print('try delete node:', node_to_delete)
+            new_g.remove_node(node_to_delete)
+            is_connected = nx.is_strongly_connected if new_g.is_directed() else nx.is_connected
+            while not is_connected(new_g):
+                new_g = G.copy()
+                node_to_delete = get_random_router_node(new_g)
+                new_g.remove_node(node_to_delete)
+            # print('finished deleting node is:', node_to_delete)
+
+            cur_nodes = sorted(new_g.nodes)
+            for idx in range(len(cur_nodes)):
+                node = sorted(list(new_g.nodes))[idx]
+                if node[1] > node_to_delete[1]:
+                    existed_edges = list(new_g.edges(node, data=True))
+                    new_g.remove_node(node)
+                    new_node = (node[0], node[1] - 1)
+                    new_g.add_node(new_node)
+                    for e in existed_edges:
+                        new_g.add_edge(new_node, e[1], **e[2])
+            G = new_g
+        # print(delete_delta, 'nodes was deleted')
+        # print(G, G.nodes, list(G.edges()))
+
+        for _ in range(add_delta):
+            new_g = G.copy()
+            new_node = ('router', len(new_g.nodes))
+            edges_cnt = random.randint(1, 3)
+            new_edges = []
+            for _ in range(edges_cnt):
+                to = get_random_router_node(new_g)
+                while (new_node, to) in new_edges:
+                    to = get_random_router_node(new_g)
+                new_edges.append((new_node, to))
+            new_g.add_node(new_node)
+            for e in new_edges:
+                new_g.add_edge(e[0], e[1], latency=10, bandwidth=1024)
+            if nx.is_directed(new_g):
+                for e in new_edges:
+                    new_g.add_edge(e[1], e[0], latency=10, bandwidth=1024)
+            G = new_g
+        # print(add_delta, 'nodes was added', G)
+        # print(G.nodes)
+        if is_dqn:
+            graph_size_delta = 0
+        run_params['network'] = G
+
     runner = RunnerClass(router_type=router_type, params_override=params_override, run_params=run_params)
     if runner.context == 'network':
         factory = runner.world.factory
@@ -226,7 +313,9 @@ def gen_episodes(
 
     df = _gen_episodes(
         router_type, one_out, factory, num_episodes, sinks=sinks, bar=bar, random_seed=random_seed,
-        use_full_topology=use_full_topology)
+        use_full_topology=use_full_topology, graph_size_delta=graph_size_delta)
+
+    run_params['network'] = original_run_params
 
     if save_path is not None:
         df.to_csv(save_path, index=False)

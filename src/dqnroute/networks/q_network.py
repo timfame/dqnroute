@@ -42,11 +42,9 @@ class CombinedNetwork(SaveableModel):
 
     # SaveableModel part
 
-    def change_label(self, _):
-        self.fst_model.change_label(
-            'pretrained_10_20_original_example_graph__original_example_settings_energy_test.bin')
-        self.snd_model.change_label(
-            'pretrained_10_20_original_example_graph__original_example_settings_energy_test.bin')
+    def change_label(self, label):
+        self.fst_model.change_label(label)
+        self.snd_model.change_label(label)
 
     def save(self):
         fst_save_result = self.fst_model.save()
@@ -65,7 +63,7 @@ class QNetwork(SaveableModel):
     """
 
     def __init__(self, n, layers, activation, additional_inputs=[],
-                 embedding_dim=None, embedding_shift=True,
+                 embedding_dim=None, embedding_shift=False,
                  one_out=True, scope='', **kwargs):
 
         if embedding_dim is not None and not one_out:
@@ -97,7 +95,7 @@ class QNetwork(SaveableModel):
             activation,
             '_'.join(map(lambda p: p[0]+'-'+str(p[1]), self.add_inputs)))
 
-
+        self.input_dim = input_dim
         self.ff_net = FFNetwork(input_dim, output_dim, layers=layers, activation=activation)
 
     def init_xavier(self):

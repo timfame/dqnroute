@@ -1,125 +1,12 @@
-import logging
-import pprint
-import math
-import numpy as np
-import networkx as nx
-import os
-
-from typing import List, Callable, Dict, Tuple
-from functools import reduce
-from simpy import Environment, Event, Resource, Process, Interrupt
-from ..utils import *
-from ..conveyor_model import *
-from ..messages import *
-from ..event_series import *
-from ..agents import *
-from ..constants import *
-from .common import *
-from .network import RouterFactory
-
-logger = logging.getLogger(DQNROUTE_LOGGER)
+from ...constants import *
+from ..common import *
+from ..factory.router import RouterFactory
+from ..factory.conveyor import ConveyorFactory
+from .common import MultiAgentEnv
 
 
 DIVERTER_RANGE = 0.5
 REAL_BAG_RADIUS = 0.5
-
-class ConveyorFactory(HandlerFactory):
-    def __init__(self, router_type, routers_cfg, topology,
-                 conn_graph, conveyor_cfg, energy_consumption, max_speed,
-                 conveyor_models, oracle=True, **kwargs):
-        self.router_type = router_type
-        self.router_cfg = routers_cfg.get(router_type, {})
-        self.conveyor_cfg = conveyor_cfg
-        self.topology = topology
-        self.conveyor_cfg = conveyor_cfg
-        self.energy_consumption = energy_consumption
-        self.max_speed = max_speed
-
-        self.conveyor_models = conveyor_models
-        self.oracle = oracle
-
-        stop_delay = self.conveyor_cfg['stop_delay']
-        try:
-            routers_cfg[router_type]['conv_stop_delay'] = stop_delay
-        except KeyError:
-            routers_cfg[router_type] = {'conv_stop_delay': stop_delay}
-
-        self.RouterClass = get_router_class(router_type, 'conveyors', oracle=oracle)
-
-        if not self.centralized():
-            r_topology, _, _ = conv_to_router(topology)
-            self.sub_factory = RouterFactory(
-                router_type, routers_cfg,
-                conn_graph=r_topology.to_undirected(),
-                topology_graph=r_topology,
-                context='conveyors', **kwargs)
-
-        super().__init__(conn_graph=conn_graph, **kwargs)
-
-        self.conveyor_dyn_envs = {}
-        time_func = lambda: self.env.now
-        energy_func = lambda: self.energy_consumption
-
-        for conv_id in self.conveyor_models.keys():
-            dyn_env = self.dynEnv()
-            dyn_env.register_var('prev_total_nrg', 0)
-            dyn_env.register_var('total_nrg', 0)
-            self.conveyor_dyn_envs[conv_id] = dyn_env
-
-    def centralized(self):
-        return issubclass(self.RouterClass, MasterHandler)
-
-    def dynEnv(self):
-        time_func = lambda: self.env.now
-        energy_func = lambda: self.energy_consumption
-        return DynamicEnv(time=time_func, energy_consumption=energy_func)
-
-    def makeMasterHandler(self) -> MasterHandler:
-        dyn_env = self.dynEnv()
-        cfg = {**self.router_cfg, **self.conveyor_cfg}
-        if self.oracle:
-            cfg['conveyor_models'] = self.conveyor_models
-        else:
-            conv_lengths = {cid: model.length for (cid, model) in self.conveyor_models.items()}
-            cfg['conv_lengths'] = conv_lengths
-        return self.RouterClass(env=dyn_env, topology=self.topology, max_speed=self.max_speed, **cfg)
-
-    def makeHandler(self, agent_id: AgentId, neighbours: List[AgentId], **kwargs) -> MessageHandler:
-        a_type = agent_type(agent_id)
-        conv_idx = conveyor_idx(self.topology, agent_id)
-
-        if conv_idx != -1:
-            dyn_env = self.conveyor_dyn_envs[conv_idx]
-        else:
-            # only if it's sink
-            dyn_env = self.dynEnv()
-
-        common_args = {
-            'env': dyn_env,
-            'id': agent_id,
-            'neighbours': neighbours,
-            'topology': self.topology,
-            'router_factory': self.sub_factory,
-            'oracle': self.oracle
-        }
-
-        if a_type == 'conveyor':
-            if self.oracle:
-                common_args['model'] = self.conveyor_models[conv_idx]
-                common_args['all_models'] = self.conveyor_models
-
-            return SimpleRouterConveyor(max_speed=self.max_speed,
-                                        length=self.conveyor_models[conv_idx].length,
-                                        **common_args,
-                                        **self.conveyor_cfg)
-        elif a_type == 'source':
-            return RouterSource(**common_args)
-        elif a_type == 'sink':
-            return RouterSink(**common_args)
-        elif a_type == 'diverter':
-            return RouterDiverter(**common_args)
-        else:
-            raise Exception('Unknown agent type: ' + a_type)
 
 
 class ConveyorsEnvironment(MultiAgentEnv):
@@ -129,7 +16,7 @@ class ConveyorsEnvironment(MultiAgentEnv):
 
     def __init__(self, env: Environment, conveyors_layout, data_series: EventSeries,
                  speed: float = 1, energy_consumption: float = 1,
-                 default_conveyor_args = {}, default_router_args = {}, **kwargs):
+                 default_conveyor_args={}, default_router_args={}, **kwargs):
         self.max_speed = speed
         self.energy_consumption = energy_consumption
         self.layout = conveyors_layout
@@ -191,7 +78,7 @@ class ConveyorsEnvironment(MultiAgentEnv):
             self.current_bags.pop(action.bag.id)
 
             # fix to make reinforce work
-            from ..agents.routers.reinforce import PackageHistory
+            from ...agents.routers.reinforce import PackageHistory
             PackageHistory.finishHistory(bag)
 
             self.data_series.logEvent('time', self.env.now, self.env.now - action.bag.start_time)
@@ -329,22 +216,22 @@ class ConveyorsEnvironment(MultiAgentEnv):
         nearest = model.putObject(bag.id, bag, pos, return_nearest=True)
         if nearest is not None:
             n_oid, n_pos = nearest
-            if abs(pos - n_pos) < 2*REAL_BAG_RADIUS:
+            if abs(pos - n_pos) < 2 * REAL_BAG_RADIUS:
                 self.log(f'collision detected: (#{bag.id}; {pos}m) with (#{n_oid}; {n_pos}m) on conv {conv_idx}',
                          True)
                 self.data_series.logEvent('collisions', self.env.now, 1)
 
         bag.last_conveyor = conv_idx
         conv_aid = ('conveyor', conv_idx)
-        
+
         # added by Igor
         # to patch the situation of a bag passing more than one time through the same conveyor
         # remove all the nodes of this conveyor
-        #print(node)
-        #print(dir(self))
-        #assert False
+        # print(node)
+        # print(dir(self))
+        # assert False
         self.current_bags[bag.id] = set()
-        
+
         self.current_bags[bag.id].add(node)
         self.passToAgent(conv_aid, IncomingBagEvent(sender, bag, node))
 
@@ -375,18 +262,18 @@ class ConveyorsEnvironment(MultiAgentEnv):
             if self.conveyor_broken[conv_idx]:
                 continue
 
-            #print(f"BEFORE ~ event {(bag, node, delay)} on conv {conv_idx}; {bag.id in left_to_sinks}; {node in self.current_bags[bag.id]}")
+            # print(f"BEFORE ~ event {(bag, node, delay)} on conv {conv_idx}; {bag.id in left_to_sinks}; {node in self.current_bags[bag.id]}")
             if bag.id in left_to_sinks or node in self.current_bags[bag.id]:
                 continue
 
-            #print(f"AFTER ~ event {(bag, node, delay)} on conv {conv_idx}")
-                
+            # print(f"AFTER ~ event {(bag, node, delay)} on conv {conv_idx}")
+
             self.log(f'conv {conv_idx}: handling {bag} on {node}')
 
             model = self.conveyor_models[conv_idx]
             atype = agent_type(node)
             left_to_sink = False
-            
+
             if atype == 'junction':
                 self.passToAgent(('conveyor', conv_idx), PassedBagEvent(bag, node))
             elif atype == 'conv_end':
@@ -430,115 +317,3 @@ class ConveyorsEnvironment(MultiAgentEnv):
             self._updateAll()
         except Interrupt:
             pass
-
-
-class ConveyorsRunner(SimulationRunner):
-    """
-    Class which constructs and runs scenarios in conveyor network
-    simulation environment.
-    """
-    context = 'conveyors'
-
-    def __init__(self, data_dir=LOG_DATA_DIR+'/conveyors', omit_training: bool = False, **kwargs):
-        """
-        :param omit_training: whether to skip simulation & training when run.
-        """
-        super().__init__(data_dir=data_dir, **kwargs)
-        self.omit_training = omit_training
-
-    def makeDataSeries(self, series_period, series_funcs):
-        time_series = event_series(series_period, series_funcs)
-        energy_series = event_series(series_period, series_funcs)
-        collisions_series = event_series(series_period, series_funcs)
-        return MultiEventSeries(time=time_series, energy=energy_series, collisions=collisions_series)
-
-    def makeMultiAgentEnv(self, **kwargs) -> MultiAgentEnv:
-        run_settings = self.run_params['settings']
-        return ConveyorsEnvironment(env=self.env, data_series=self.data_series,
-                                    conveyors_layout=self.run_params['configuration'],
-                                    routers_cfg=run_settings['router'],
-                                    conveyor_cfg=run_settings['conveyor'],
-                                    **run_settings['conveyor_env'], **kwargs)
-
-    def relevantConfig(self):
-        ps = self.run_params
-        ss = ps['settings']
-        return (ps['configuration'], ss['bags_distr'], ss['conveyor_env'],
-                ss['conveyor'], ss['router'].get(self.world.factory.router_type, {}))
-
-    def makeRunId(self, random_seed: int) -> str:
-        return f'{self.world.factory.router_type}-{random_seed}'
-
-    def runProcess(self, random_seed: int = None):
-        if random_seed is not None:
-            if self.world.factory.centralized():
-                seed = random_seed + 42
-            else:
-                seed = random_seed
-            set_random_seed(seed)
-
-        all_nodes = list(self.world.conn_graph.nodes)
-        for node in all_nodes:
-            self.world.passToAgent(node, WireInMsg(-1, InitMessage({})))
-
-        bag_distr = self.run_params['settings']['bags_distr']
-        sources = list(self.run_params['configuration']['sources'].keys())
-        sinks = self.run_params['configuration']['sinks']
-
-        # Little pause in order to let all initialization messages settle
-        yield self.env.timeout(1)
-
-        # added by Igor to support loading already trained models
-        if self.omit_training:
-            return
-        
-        bag_id = 1
-        
-        for period in bag_distr['sequence']:
-            try:
-                action = period['action']
-                conv_idx = period['conv_idx']
-                pause = period.get('pause', 0)
-
-                if pause > 0:
-                    yield self.env.timeout(pause)
-
-                if action == 'conv_break':
-                    yield self.world.handleWorldEvent(ConveyorBreakEvent(conv_idx))
-                elif action == 'conv_restore':
-                    yield self.world.handleWorldEvent(ConveyorRestoreEvent(conv_idx))
-                else:
-                    raise Exception('Unknown action: ' + action)
-
-                if pause > 0:
-                    yield self.env.timeout(pause)
-
-            except KeyError:
-                # adding a tiny noise to delta
-                delta = period['delta'] + round(np.random.normal(0, 0.5), 2)
-
-                cur_sources = period.get('sources', sources)
-                cur_sinks = period.get('sinks', sinks)
-                simult_sources = period.get("simult_sources", 1)
-                #print(period, cur_sources)
-                #assert False
-
-                for i in range(0, period['bags_number'] // simult_sources):
-                    srcs = random.sample(cur_sources, simult_sources)
-                    for (j, src) in enumerate(srcs):
-                        if j > 0:
-                            mini_delta = round(abs(np.random.normal(0, 0.5)), 2)
-                            yield self.env.timeout(mini_delta)
-
-                        dst = random.choice(cur_sinks)
-
-                        # fix to make reinforce work
-                        from dqnroute.agents.routers.reinforce import PackageHistory
-                        PackageHistory.started_packages.add(bag_id)
-
-                        bag = Bag(bag_id, ('sink', dst), self.env.now, None)
-                        logger.debug(f"Sending random bag #{bag_id} from {src} to {dst} at time {self.env.now}")
-                        yield self.world.handleWorldEvent(BagAppearanceEvent(src, bag))
-
-                        bag_id += 1
-                    yield self.env.timeout(delta)
